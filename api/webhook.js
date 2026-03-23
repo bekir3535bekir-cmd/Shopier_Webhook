@@ -2,11 +2,15 @@ const crypto = require('crypto');
 const admin = require('firebase-admin');
 
 if (!admin.apps.length) {
+    let pk = process.env.FIREBASE_PRIVATE_KEY || "";
+    if (pk.startsWith('"') && pk.endsWith('"')) pk = pk.substring(1, pk.length - 1);
+    pk = pk.replace(/\\n/g, '\n');
+
     admin.initializeApp({
         credential: admin.credential.cert({
             projectId: process.env.FIREBASE_PROJECT_ID,
             clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-            privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+            privateKey: pk,
         })
     });
 }
@@ -19,53 +23,32 @@ const getRawBody = (req) => new Promise((resolve) => {
 
 export default async function handler(req, res) {
     if (req.method !== 'POST') return res.status(405).send('Not Allowed');
-
     try {
         const API_USER = process.env.SHOPIER_API_USER;
         const API_SECRET = process.env.SHOPIER_API_SECRET;
-
         const rawBody = await getRawBody(req);
 
-        // MULTIPART PARSER: res ve hash degerlerini ham metin icinden ceker
         const extractField = (name) => {
             const regex = new RegExp(`name="${name}"[\\r\\n\\t\\s]+([^\\r\\n-]+)`, 'i');
             const match = rawBody.match(regex);
             return match ? match[1].trim() : null;
         };
 
-        let shopierRes = extractField('res');
-        let shopierHash = extractField('hash');
+        let shopierRes = extractField('res') || new URLSearchParams(rawBody).get('res');
+        let shopierHash = extractField('hash') || new URLSearchParams(rawBody).get('hash');
 
-        // Alternatif olarak standart form-urlencoded denemesi
-        if (!shopierRes) {
-            const params = new URLSearchParams(rawBody);
-            shopierRes = params.get('res');
-            shopierHash = params.get('hash');
-        }
+        if (!shopierRes) return res.status(400).send('No Data');
 
-        if (!shopierRes || !shopierHash) {
-            console.error("Hata: Veri ayiklanamadi. Ham Veri:", rawBody.substring(0, 100));
-            return res.status(400).send('Data extraction failed');
-        }
+        const generatedHash = crypto.createHmac('sha256', API_SECRET).update(shopierRes + API_USER).digest('hex');
+        if (generatedHash !== shopierHash) return res.status(401).send('Hash Error');
 
-        const dataString = shopierRes + API_USER;
-        const generatedHash = crypto.createHmac('sha256', API_SECRET).update(dataString).digest('hex');
-
-        if (generatedHash !== shopierHash) {
-            return res.status(401).send('Hash mismatch');
-        }
-
-        const jsonString = Buffer.from(shopierRes, 'base64').toString('utf8');
-        const arrayResult = JSON.parse(jsonString);
-
+        const arrayResult = JSON.parse(Buffer.from(shopierRes, 'base64').toString('utf8'));
         const buyerEmail = arrayResult.email;
         const productName = (arrayResult.productlist || "").toLowerCase();
 
         const user = await admin.auth().getUserByEmail(buyerEmail);
         
-        let durationDays = 30; 
-        let tag = "1m";
-
+        let durationDays = 30; let tag = "1m";
         if (productName.includes("6 ay")) { durationDays = 180; tag = "6m"; }
         else if (productName.includes("1 yıl") || productName.includes("yıllık")) { durationDays = 365; tag = "1y"; }
         else if (productName.includes("sınırsız")) { durationDays = 9999; tag = "unlimited"; }
@@ -74,18 +57,14 @@ export default async function handler(req, res) {
         expiryDate.setDate(expiryDate.getDate() + durationDays);
         const expiryString = expiryDate.toISOString().split('T')[0];
 
-        let finalPhotoUrl = `https://shopier.pro/expiry/${expiryString}/${tag}`;
-        if (tag === "unlimited") finalPhotoUrl = "https://shopier.pro/unlimited";
+        let finalPhotoUrl = tag === "unlimited" ? "https://shopier.pro/unlimited" : `https://shopier.pro/expiry/${expiryString}/${tag}`;
 
         await admin.auth().updateUser(user.uid, { photoURL: finalPhotoUrl });
-        
         return res.status(200).send('success');
     } catch (error) {
         console.error("Sistem Hatasi:", error.message);
-        return res.status(200).send('success'); // Shopier'i mutlu et
+        return res.status(200).send('success');
     }
 }
 
-export const config = {
-    api: { bodyParser: false },
-};
+export const config = { api: { bodyParser: false } };
