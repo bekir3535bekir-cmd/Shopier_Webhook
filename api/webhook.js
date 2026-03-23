@@ -40,24 +40,26 @@ module.exports = async (req, res) => {
 
         const arrayResult = JSON.parse(Buffer.from(payload.res, 'base64').toString('utf8'));
         const buyerEmail = arrayResult.email;
-        const productName = arrayResult.productlist || ""; // Ürün ismini al
+        const productName = arrayResult.productlist || "";
 
-        // SÜRE HESAPLA (Varsayılan 30 gün)
+        // SÜRE VE TİP BELİRLE
         let daysToAdd = 30;
-        if (productName.includes("6 Ay")) daysToAdd = 180;
-        if (productName.includes("Yıllık") || productName.includes("12 Ay")) daysToAdd = 365;
+        let pType = '1m';
+        if (productName.includes("6 Ay")) { daysToAdd = 180; pType = '6m'; }
+        if (productName.includes("Yıllık") || productName.includes("12 Ay")) { daysToAdd = 365; pType = '1y'; }
 
-        // BİTİŞ TARİHİ BELİRLE
+        // BİTİŞ TARİHİ
         const expiryDate = new Date();
         expiryDate.setDate(expiryDate.getDate() + daysToAdd);
-        const expiryString = expiryDate.toISOString().split('T')[0]; // YYYY-MM-DD
+        const expiryString = expiryDate.toISOString().split('T')[0];
 
         try {
             const userRecord = await admin.auth().getUserByEmail(buyerEmail);
+            // Örnek: https://shopier.pro/expiry/2026-04-23/1m
             await admin.auth().updateUser(userRecord.uid, {
-                photoURL: `https://shopier.pro/expiry/${expiryString}`
+                photoURL: `https://shopier.pro/expiry/${expiryString}/${pType}`
             });
-            console.log(`ZAMANLI PRO: ${buyerEmail} bitiş: ${expiryString}`);
+            console.log(`ZAMANLI PRO (${pType}): ${buyerEmail}`);
         } catch (err) { console.log("Hata: " + buyerEmail); }
 
         return replySuccess();
