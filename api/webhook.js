@@ -11,6 +11,16 @@ if (!admin.apps.length) {
     });
 }
 
+// Ham veriyi (raw body) okuma fonksiyonu
+const getRawBody = (req) => {
+    return new Promise((resolve, reject) => {
+        let body = '';
+        req.on('data', chunk => { body += chunk.toString(); });
+        req.on('end', () => resolve(body));
+        req.on('error', err => reject(err));
+    });
+};
+
 export default async function handler(req, res) {
     if (req.method !== 'POST') return res.status(405).send('Method Not Allowed');
 
@@ -18,29 +28,23 @@ export default async function handler(req, res) {
         const API_USER = process.env.SHOPIER_API_USER;
         const API_SECRET = process.env.SHOPIER_API_SECRET;
 
-        // VERİ AVCISI: Veriyi her yerden ara!
-        let shopierRes = req.body?.res || req.query?.res;
-        let shopierHash = req.body?.hash || req.query?.hash;
+        // Vercel body-parser kapali oldugu icin veriyi sifirdan okuyoruz
+        const rawBody = await getRawBody(req);
+        const body = Object.fromEntries(new URLSearchParams(rawBody));
 
-        // Eğer hala bulamadıysa, ham veriyi manuel parse et
-        if (!shopierRes) {
-            const getRawBody = (r) => new Promise((v) => { let b = ''; r.on('data', c => b += c); r.on('end', () => v(b)); });
-            const raw = await getRawBody(req);
-            const params = new URLSearchParams(raw);
-            shopierRes = params.get('res');
-            shopierHash = params.get('hash');
-        }
+        const shopierRes = body.res;
+        const shopierHash = body.hash;
 
         if (!shopierRes || !shopierHash) {
-            console.error("KRITIK: Veri bulunamadı. Body:", JSON.stringify(req.body));
-            return res.status(400).send('Parametre Yok');
+            console.error("Hata: Raw Body bos geldi veya res/hash yok. Gelen:", rawBody);
+            return res.status(400).send('Missing parameter');
         }
 
         const dataString = shopierRes + API_USER;
         const generatedHash = crypto.createHmac('sha256', API_SECRET).update(dataString).digest('hex');
 
         if (generatedHash !== shopierHash) {
-            return res.status(401).send('Gecersiz Imza');
+            return res.status(401).send('Invalid Hash');
         }
 
         const jsonString = Buffer.from(shopierRes, 'base64').toString('utf8');
@@ -51,19 +55,14 @@ export default async function handler(req, res) {
 
         const user = await admin.auth().getUserByEmail(buyerEmail);
         
-        let durationDays = 30; 
-        let tag = "1m";
+        // Lisans Sureleri
+        let durationDays = 7; 
+        let tag = "trial";
 
-        if (productName.includes("6 ay")) {
-            durationDays = 180;
-            tag = "6m";
-        } else if (productName.includes("1 yıl") || productName.includes("yıllık")) {
-            durationDays = 365;
-            tag = "1y";
-        } else if (productName.includes("sınırsız")) {
-            durationDays = 9999;
-            tag = "unlimited";
-        }
+        if (productName.includes("1 ay")) { durationDays = 30; tag = "1m"; }
+        else if (productName.includes("6 ay")) { durationDays = 180; tag = "6m"; }
+        else if (productName.includes("1 yıl") || productName.includes("yıllık")) { durationDays = 365; tag = "1y"; }
+        else if (productName.includes("sınırsız")) { durationDays = 9999; tag = "unlimited"; }
 
         const expiryDate = new Date();
         expiryDate.setDate(expiryDate.getDate() + durationDays);
@@ -76,7 +75,14 @@ export default async function handler(req, res) {
         
         return res.status(200).send('success');
     } catch (error) {
-        console.error("Hata:", error.message);
-        return res.status(200).send('success'); // Shopier sussun diye 200 donuyoruz
+        console.error("Hata Detayi:", error.message);
+        return res.status(200).send('success');
     }
 }
+
+// KRITIK AYAR: Vercel'in otomatik body parser'ini kapatiyoruz ki manuel okuyabilelim
+export const config = {
+    api: {
+        bodyParser: false,
+    },
+};
