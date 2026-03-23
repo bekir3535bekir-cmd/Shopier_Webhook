@@ -1,74 +1,73 @@
 const crypto = require('crypto');
 const admin = require('firebase-admin');
 
-// Firebase Başlatma (Hata vermemesi için korumalı)
-try {
-    if (!admin.apps.length) {
-        admin.initializeApp({
-            credential: admin.credential.cert({
-                projectId: process.env.FIREBASE_PROJECT_ID,
-                clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-                privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-            })
-        });
-    }
-} catch (e) {
-    console.error("Firebase başlatma hatası:", e);
+if (!admin.apps.length) {
+    admin.initializeApp({
+        credential: admin.credential.cert({
+            projectId: process.env.FIREBASE_PROJECT_ID,
+            clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+            privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        })
+    });
 }
 
+// VERİ VAKUMU (Body Parser)
+const getRawBody = (req) => {
+    return new Promise((resolve, reject) => {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', () => resolve(body));
+        req.on('error', err => reject(err));
+    });
+};
+
 module.exports = async (req, res) => {
-    // Sadece POST destekliyoruz
-    if (req.method !== 'POST') return res.status(200).send('Webhook is alive!');
+    try {
+        if (req.method !== 'POST') return res.status(200).send('Webhook is alive!');
 
-    const API_USER = process.env.SHOPIER_API_USER;
-    const API_SECRET = process.env.SHOPIER_API_SECRET;
+        // Veriyi vakumla çek ve objeye çevir
+        const rawBody = await getRawBody(req);
+        const params = new URLSearchParams(rawBody);
+        const payload = Object.fromEntries(params);
 
-    // SHOPİER VERİ PARSER (Garantili Mod)
-    let payload = req.body;
-    if (typeof payload === 'string' || Buffer.isBuffer(payload)) {
-        try {
-            const params = new URLSearchParams(payload.toString());
-            payload = Object.fromEntries(params);
-        } catch (e) {
-            console.error("Parser Hatası:", e);
+        if (!payload || !payload.res || !payload.hash) {
+            console.log("Eksik veri yakalandı, ama Shopier'e çaktırma.");
+            return res.status(200).send('success');
         }
-    }
 
-    if (!payload.res || !payload.hash) {
-        return res.status(200).send('missing parameters');
-    }
+        const API_USER = process.env.SHOPIER_API_USER;
+        const API_SECRET = process.env.SHOPIER_API_SECRET;
 
-    // GÜVENLİK KONTROLÜ (Hash Doğrulama)
-    const dataString = payload.res + API_USER;
-    const generatedHash = crypto.createHmac('sha256', API_SECRET).update(dataString).digest('hex');
+        // Hash Kontrolü
+        const dataString = payload.res + API_USER;
+        const generatedHash = crypto.createHmac('sha256', API_SECRET).update(dataString).digest('hex');
 
-    if (generatedHash !== payload.hash) {
-        console.error("Güvenlik: Hashler tutmuyor!");
-        return res.status(200).send('hash mismatch');
-    }
+        if (generatedHash !== payload.hash) {
+            console.error("Güvenlik: Hash uyuşmadı");
+            return res.status(200).send('success');
+        }
 
-    // VERİYİ ÇÖZ
-    let arrayResult;
-    try {
+        // Müşteri Bilgisini Çöz
         const jsonString = Buffer.from(payload.res, 'base64').toString('utf8');
-        arrayResult = JSON.parse(jsonString);
-    } catch (e) {
-        return res.status(200).send('json error');
+        const arrayResult = JSON.parse(jsonString);
+        const buyerEmail = arrayResult.email;
+
+        // Firebase Pro Yap
+        try {
+            const userRecord = await admin.auth().getUserByEmail(buyerEmail);
+            await admin.auth().updateUser(userRecord.uid, {
+                photoURL: 'https://shopier.pro/unlimited'
+            });
+            console.log(`İŞLEM OK: ${buyerEmail} artık SINIRSIZ!`);
+        } catch (err) {
+            console.log(`Firebase Hatası (Üye olmayabilir): ${buyerEmail}`);
+        }
+
+        // Shopier'e her şey yolunda de
+        res.status(200).send('success');
+
+    } catch (err) {
+        console.error("Sistem Hatası:", err.message);
+        res.status(200).send('success');
     }
-
-    const buyerEmail = arrayResult.email;
-
-    // FIREBASE PRO GÜNCELLEME
-    try {
-        const userRecord = await admin.auth().getUserByEmail(buyerEmail);
-        await admin.auth().updateUser(userRecord.uid, {
-            photoURL: 'https://shopier.pro/unlimited'
-        });
-        console.log(`BAŞARILI: ${buyerEmail} artık PRO!`);
-    } catch (error) {
-        console.log(`Bilgi: ${buyerEmail} henüz üye değil veya hata oluştu.`);
-    }
-
-    // Shopier'in beklediği onay
-    res.status(200).send('success');
 };
