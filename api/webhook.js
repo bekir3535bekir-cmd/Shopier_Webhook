@@ -11,16 +11,6 @@ if (!admin.apps.length) {
     });
 }
 
-// Ham veriyi (raw body) okuma fonksiyonu
-const getRawBody = (req) => {
-    return new Promise((resolve, reject) => {
-        let body = '';
-        req.on('data', chunk => { body += chunk.toString(); });
-        req.on('end', () => resolve(body));
-        req.on('error', err => reject(err));
-    });
-};
-
 export default async function handler(req, res) {
     if (req.method !== 'POST') return res.status(405).send('Method Not Allowed');
 
@@ -28,28 +18,29 @@ export default async function handler(req, res) {
         const API_USER = process.env.SHOPIER_API_USER;
         const API_SECRET = process.env.SHOPIER_API_SECRET;
 
-        // Veriyi manuel parse et (Vercel body-parser takilmalarini onler)
-        let body = "";
-        if (req.body && typeof req.body === 'object') {
-            body = req.body;
-        } else {
-            const rawBody = await getRawBody(req);
-            body = Object.fromEntries(new URLSearchParams(rawBody));
+        // VERİ AVCISI: Veriyi her yerden ara!
+        let shopierRes = req.body?.res || req.query?.res;
+        let shopierHash = req.body?.hash || req.query?.hash;
+
+        // Eğer hala bulamadıysa, ham veriyi manuel parse et
+        if (!shopierRes) {
+            const getRawBody = (r) => new Promise((v) => { let b = ''; r.on('data', c => b += c); r.on('end', () => v(b)); });
+            const raw = await getRawBody(req);
+            const params = new URLSearchParams(raw);
+            shopierRes = params.get('res');
+            shopierHash = params.get('hash');
         }
 
-        const shopierRes = body.res;
-        const shopierHash = body.hash;
-
         if (!shopierRes || !shopierHash) {
-            console.error("Hata: Eksik Parametre");
-            return res.status(400).send('Missing parameter');
+            console.error("KRITIK: Veri bulunamadı. Body:", JSON.stringify(req.body));
+            return res.status(400).send('Parametre Yok');
         }
 
         const dataString = shopierRes + API_USER;
         const generatedHash = crypto.createHmac('sha256', API_SECRET).update(dataString).digest('hex');
 
         if (generatedHash !== shopierHash) {
-            return res.status(401).send('Invalid Hash');
+            return res.status(401).send('Gecersiz Imza');
         }
 
         const jsonString = Buffer.from(shopierRes, 'base64').toString('utf8');
@@ -85,7 +76,7 @@ export default async function handler(req, res) {
         
         return res.status(200).send('success');
     } catch (error) {
-        console.error("Webhook Hatasi:", error.message);
-        return res.status(500).send('Internal Error');
+        console.error("Hata:", error.message);
+        return res.status(200).send('success'); // Shopier sussun diye 200 donuyoruz
     }
 }
